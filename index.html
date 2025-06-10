@@ -1,3 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 預覽器 (效能優化版)</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js"></script>
+    
+    <style>
+        /* --- CSS 樣式與原版相同，此處省略 --- */
+        html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: Arial, sans-serif; background-color: #525659; }
+        body { display: flex; flex-direction: column; }
+        #top-bar { background-color: #333; color: white; padding: 8px 16px; display: flex; align-items: center; flex-shrink: 0; box-shadow: 0 2px 5px rgba(0,0,0,0.4); z-index: 10; }
+        #upload-container { display: flex; align-items: center; }
+        #upload-button { padding: 6px 12px; background-color: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 14px; }
+        #upload-button:hover { background-color: #0056b3; }
+        #file-name { margin-left: 12px; color: #ccc; font-size: 14px; }
+        #zoom-controls { margin-left: auto; display: flex; align-items: center; }
+        #zoom-controls button { font-size: 16px; font-weight: bold; width: 32px; height: 32px; margin: 0 5px; border: 1px solid #555; background-color: #444; color: white; border-radius: 4px; cursor: pointer; }
+        #zoom-controls button:hover { background-color: #555; }
+        #zoom-percent { min-width: 50px; text-align: center; }
+        #pdf-viewer { flex-grow: 1; overflow-y: auto; text-align: center; padding: 20px 0; transition: background-color 0.3s; }
+        #pdf-viewer.drag-over { background-color: #3e6d8e; border: 4px dashed #fff; }
+        .page-container { position: relative; margin: 0 auto 16px auto; box-shadow: 0 4px 8px rgba(0,0,0,0.2); background-color: white; } /* 加上背景色避免透明 */
+        .page-container canvas, .page-container .textLayer { position: absolute; top: 0; left: 0; }
+        .textLayer { line-height: 1; }
+        .textLayer > span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
+        ::selection { background: rgba(0, 0, 255, 0.3); }
+    </style>
+</head>
+<body>
+
+    <div id="top-bar">
+        <div id="upload-container">
+            <input type="file" id="pdf-upload" accept="application/pdf" style="display: none;">
+            <button id="upload-button">選擇檔案</button>
+            <span id="file-name">尚未選擇檔案</span>
+        </div>
+        <div id="zoom-controls">
+            <button id="zoom-out">-</button>
+            <span id="zoom-percent">100%</span>
+            <button id="zoom-in">+</button>
+        </div>
+    </div>
+
+    <div id="pdf-viewer">
+        <p style="color: white; padding: 40px; border: 2px dashed #888; display: inline-block;">
+            點擊「選擇檔案」或將 PDF 拖曳至此
+        </p>
+    </div>
+
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
+
+    let currentPdf = null;
+    let currentScale = 1.5;
+    let isRendering = false;
+
+    const viewer = document.getElementById('pdf-viewer');
+    const uploadInput = document.getElementById('pdf-upload');
+    const uploadButton = document.getElementById('upload-button');
+    const fileNameSpan = document.getElementById('file-name');
+    const zoomInBtn = document.getElementById('zoom-in');
+    const zoomOutBtn = document.getElementById('zoom-out');
+    const zoomPercentSpan = document.getElementById('zoom-percent');
+
+    // --- 【新增】儲存選取範圍的函式 ---
+    function saveSelection() {
+        const selection = window.getSelection();
+        // 如果沒有選取任何內容，或只是個游標，則返回 null
+        if (!selection.rangeCount || selection.isCollapsed) {
+            return null;
+        }
+
+        const range = selection.getRangeAt(0);
+        const { startContainer, endContainer, startOffset, endOffset } = range;
+
+        // 找到選取範圍的起始和結束節點所在的頁面容器
+        const startPageEl = startContainer.parentElement.closest('.page-container');
+        const endPageEl = endContainer.parentElement.closest('.page-container');
+
+        // 如果選取範圍不在 PDF 頁面內，則不處理
+        if (!startPageEl || !endPageEl) return null;
+        
+        // pdf.js 的文字層(textLayer)中的 span 才是我們要找的目標
+        // startContainer 可能是 span 內部的文字節點 (nodeType === 3)
+        const startSpan = startContainer.nodeType === 3 ? startContainer.parentNode : startContainer;
+        const endSpan = endContainer.nodeType === 3 ? endContainer.parentNode : endContainer;
+
+        // 取得該 span 在其父層 (textLayer) 中的索引位置
+        const startSpanIndex = Array.from(startSpan.parentElement.children).indexOf(startSpan);
+        const endSpanIndex = Array.from(endSpan.parentElement.children).indexOf(endSpan);
+        
+        // 返回一個包含所有必要資訊的物件，以便後續恢復
+        return {
+            startPage: parseInt(startPageEl.dataset.pageNumber, 10),
+            startSpanIndex,
+            startOffset,
+            endPage: parseInt(endPageEl.dataset.pageNumber, 10),
+            endSpanIndex,
+            endOffset,
+        };
+    }
+
+    // --- 【新增】恢復選取範圍的函式 ---
+    function restoreSelection(savedSelection) {
+        if (!savedSelection) return;
+
+        try {
+            // 根據儲存的頁碼找到新的頁面容器
+            const startPageEl = document.getElementById(`page-container-${savedSelection.startPage}`);
+            const endPageEl = document.getElementById(`page-container-${savedSelection.endPage}`);
+            if (!startPageEl || !endPageEl) return;
+
+            // 找到新的文字層
+            const startTextLayer = startPageEl.querySelector('.textLayer');
+            const endTextLayer = endPageEl.querySelector('.textLayer');
+            if (!startTextLayer || !endTextLayer) return;
+
+            // 根據儲存的索引找到新的 span 元素
+            const startSpan = startTextLayer.children[savedSelection.startSpanIndex];
+            const endSpan = endTextLayer.children[savedSelection.endSpanIndex];
+            if (!startSpan || !endSpan) return;
+
+            // 文字節點是 span 的第一個子元素
+            const startNode = startSpan.firstChild;
+            const endNode = endSpan.firstChild;
+            if (!startNode || !endNode) return;
+            
+            // 建立一個新的 Range 物件
+            const newRange = document.createRange();
+            newRange.setStart(startNode, Math.min(savedSelection.startOffset, startNode.length));
+            newRange.setEnd(endNode, Math.min(savedSelection.endOffset, endNode.length));
+
+            // 將新的 Range 套用到全域選取物件上
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(newRange);
+        } catch (error) {
+            console.error("恢復選取範圍時失敗:", error);
+        }
+    }
+
+
+    async function loadFile(file) {
+        if (!file || file.type !== 'application/pdf') {
+            alert('請上傳 PDF 格式的檔案！');
+            return;
+        }
+        fileNameSpan.textContent = file.name;
+        viewer.innerHTML = '<p style="color: white;">正在載入檔案...</p>';
+        try {
+            const fileData = await file.arrayBuffer();
+            const pdfDoc = await pdfjsLib.getDocument(new Uint8Array(fileData)).promise;
+            currentPdf = pdfDoc;
+            await setupViewer();
+        } catch (error) {
+            console.error('載入 PDF 時發生錯誤:', error);
+            fileNameSpan.textContent = '檔案載入失敗';
+            viewer.innerHTML = `<p style="color: red;">抱歉，無法載入此 PDF 檔案。</p>`;
+        }
+    }
+    
+    async function setupViewer() {
+        if (!currentPdf) return;
+        viewer.innerHTML = '';
+        updateZoomDisplay();
+        for (let i = 1; i <= currentPdf.numPages; i++) {
+            const page = await currentPdf.getPage(i);
+            const viewport = page.getViewport({ scale: currentScale });
+            const pageContainer = document.createElement('div');
+            pageContainer.className = 'page-container';
+            pageContainer.id = `page-container-${i}`;
+            pageContainer.style.width = `${viewport.width}px`;
+            pageContainer.style.height = `${viewport.height}px`;
+            pageContainer.dataset.pageNumber = i;
+            pageContainer.dataset.rendered = "false";
+            viewer.appendChild(pageContainer);
+        }
+        await renderVisiblePages(); // 【修改】等待首次渲染完成
+    }
+
+    async function renderVisiblePages() {
+        if (isRendering || !currentPdf) return;
+        isRendering = true;
+
+        const pageContainers = viewer.querySelectorAll('.page-container');
+        const viewerRect = viewer.getBoundingClientRect();
+        const renderPromises = [];
+
+        for (const container of pageContainers) {
+            const containerRect = container.getBoundingClientRect();
+            const isVisible = (containerRect.top < viewerRect.bottom + 500) && (containerRect.bottom > viewerRect.top - 500);
+            if (isVisible && container.dataset.rendered === "false") {
+                container.dataset.rendered = "true";
+                const pageNum = parseInt(container.dataset.pageNumber, 10);
+                renderPromises.push(renderPage(pageNum));
+            }
+        }
+        
+        await Promise.all(renderPromises);
+        isRendering = false;
+    }
+
+    async function renderPage(pageNum) {
+        try {
+            const page = await currentPdf.getPage(pageNum);
+            const viewport = page.getViewport({ scale: currentScale });
+            const pageContainer = document.getElementById(`page-container-${pageNum}`);
+            if (!pageContainer) return;
+            
+            pageContainer.innerHTML = ''; // 渲染前還是要清空，以防重複渲染
+
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            pageContainer.appendChild(canvas);
+
+            const textLayerDiv = document.createElement('div');
+            textLayerDiv.className = 'textLayer';
+            pageContainer.appendChild(textLayerDiv);
+            
+            await page.render({ canvasContext: context, viewport }).promise;
+
+            const textContent = await page.getTextContent();
+            await pdfjsLib.renderTextLayer({
+                textContent,
+                container: textLayerDiv,
+                viewport,
+                textDivs: []
+            }).promise;
+        } catch (error) {
+             console.error(`渲染頁面 ${pageNum} 失敗:`, error);
+        }
+    }
+
+    function updateZoomDisplay() {
+        zoomPercentSpan.textContent = `${Math.round(currentScale * 100)}%`;
+    }
+
+    // --- 【修改】縮放函式，整合選取狀態的儲存與恢復 ---
 // --- 【最終座標修正版】縮放函式 ---
 async function handleZoom(newScale, focusPoint = null) {
     if (!currentPdf || isRendering) return;
@@ -61,3 +305,61 @@ async function handleZoom(newScale, focusPoint = null) {
         window.geminiTranslatorBridge?.resumeUpdates();
     }, 100); 
 }
+    
+    // --- 事件監聽 (其他部分保持不變) ---
+    uploadButton.addEventListener('click', () => uploadInput.click());
+    uploadInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+    viewer.addEventListener('dragover', (e) => { e.preventDefault(); viewer.classList.add('drag-over'); });
+    viewer.addEventListener('dragleave', () => viewer.classList.remove('drag-over'));
+    viewer.addEventListener('drop', (e) => {
+        e.preventDefault();
+        viewer.classList.remove('drag-over');
+        loadFile(e.dataTransfer.files[0]);
+    });
+    
+    function throttle(func, limit) {
+        let inThrottle;
+        return function() {
+            const args = arguments;
+            const context = this;
+            if (!inThrottle) {
+                func.apply(context, args);
+                inThrottle = true;
+                setTimeout(() => inThrottle = false, limit);
+            }
+        }
+    }
+    
+    const throttledZoomHandler = throttle((e) => {
+        const newScale = e.deltaY > 0 ? currentScale * 0.85 : currentScale * 1.15; // 微調縮放比例
+        if (newScale >= 0.2 && newScale <= 8) {
+             handleZoom(newScale, { y: e.clientY });
+        }
+    }, 50);
+
+    viewer.addEventListener('wheel', (e) => {
+        e.preventDefault();
+        if (e.ctrlKey || e.metaKey) {
+            throttledZoomHandler(e);
+        } else {
+            viewer.scrollTop += e.deltaY;
+            viewer.scrollLeft += e.deltaX; // 同時處理水平滾動
+        }
+    }, { passive: false });
+
+    zoomInBtn.addEventListener('click', () => {
+        const newScale = currentScale + 0.25;
+        if (newScale <= 8.0) handleZoom(newScale);
+    });
+
+    zoomOutBtn.addEventListener('click', () => {
+        const newScale = currentScale - 0.25;
+        if (newScale >= 0.2) handleZoom(newScale);
+    });
+
+    viewer.addEventListener('scroll', throttle(renderVisiblePages, 150));
+
+</script>
+</body>
+</html>
