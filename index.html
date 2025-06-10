@@ -242,69 +242,51 @@
     }
 
     // --- 【修改】縮放函式，整合選取狀態的儲存與恢復 ---
-// --- 【最終座標修正版】縮放函式 ---
-async function handleZoom(newScale, focusPoint = null) {
-    if (!currentPdf || isRendering) return;
+    async function handleZoom(newScale, focusPoint = null) {
+        if (!currentPdf || isRendering) return;
 
-    const oldScale = currentScale; // 在改變它之前，儲存舊的縮放比例
+        // 1. 【儲存】在做任何事之前，先儲存目前的選取狀態
+        const savedSelection = saveSelection();
 
-    // 步驟 1: 【暫停】
-    window.geminiTranslatorBridge?.pauseUpdates();
+        const viewerRect = viewer.getBoundingClientRect();
+        const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
+        const scrollTopBefore = viewer.scrollTop;
+        const scrollHeightBefore = viewer.scrollHeight;
+        const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
+        
+        currentScale = newScale;
+        isRendering = true;
+        
+        updateZoomDisplay();
 
-    // 步驟 2: 【儲存】傳入「舊的」比例尺，用於計算歸一化座標
-    const savedSelection = saveSelection();
-    const savedTranslatorState = window.geminiTranslatorBridge?.saveState(oldScale);
+        const updatePromises = [];
+        for (let i = 1; i <= currentPdf.numPages; i++) {
+            updatePromises.push((async () => {
+                const page = await currentPdf.getPage(i);
+                const viewport = page.getViewport({ scale: currentScale });
+                const pageContainer = document.getElementById(`page-container-${i}`);
+                if (pageContainer) {
+                    pageContainer.style.width = `${viewport.width}px`;
+                    pageContainer.style.height = `${viewport.height}px`;
+                    pageContainer.dataset.rendered = "false";
+                    pageContainer.innerHTML = ''; // 依然要清空，為重新渲染做準備
+                }
+            })());
+        }
+        await Promise.all(updatePromises);
 
-    // --- 開始進行縮放和 DOM 清理 ---
-    currentScale = newScale; // 更新全域比例尺為新的值
-    isRendering = true;
-
-    const viewerRect = viewer.getBoundingClientRect();
-    const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
-    const scrollTopBefore = viewer.scrollTop;
-    const scrollHeightBefore = viewer.scrollHeight;
-    const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
-    
-    updateZoomDisplay();
-
-    const updatePromises = [];
-    for (let i = 1; i <= currentPdf.numPages; i++) {
-        updatePromises.push((async () => {
-            const page = await currentPdf.getPage(i);
-            const viewport = page.getViewport({ scale: currentScale });
-            const pageContainer = document.getElementById(`page-container-${i}`);
-            if (pageContainer) {
-                pageContainer.style.width = `${viewport.width}px`;
-                pageContainer.style.height = `${viewport.height}px`;
-                pageContainer.dataset.rendered = "false";
-                pageContainer.innerHTML = '';
-            }
-        })());
+        const scrollHeightAfter = viewer.scrollHeight;
+        viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
+        viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
+        
+        isRendering = false;
+        
+        // 2. 【渲染】等待可視區域的頁面重新渲染完成
+        await renderVisiblePages();
+        
+        // 3. 【恢復】在渲染完成後，恢復之前儲存的選取狀態
+        restoreSelection(savedSelection);
     }
-    await Promise.all(updatePromises);
-
-    const scrollHeightAfter = viewer.scrollHeight;
-    viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
-    viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
-    
-    isRendering = false;
-    // --- 縮放和 DOM 清理結束 ---
-
-    // 步驟 3: 【渲染】
-    await renderVisiblePages();
-    
-    // 步驟 4: 【恢復】傳入「新的」比例尺，用於計算目標位置
-    restoreSelection(savedSelection);
-    if (savedTranslatorState) {
-        window.geminiTranslatorBridge.restoreState(savedTranslatorState, currentScale);
-    }
-
-    // 步驟 5: 【恢復運作】
-    // 使用 setTimeout 確保恢復操作完全完成後再恢復更新，增加穩定性
-    setTimeout(() => {
-        window.geminiTranslatorBridge?.resumeUpdates();
-    }, 100); 
-}
     
     // --- 事件監聽 (其他部分保持不變) ---
     uploadButton.addEventListener('click', () => uploadInput.click());
