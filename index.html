@@ -74,6 +74,7 @@
     </div>
 
     <script>
+        let wheelRafId = null;
         pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
 
         let currentPdf = null;
@@ -141,12 +142,32 @@
         });
 
         // 滾輪縮放事件
-        viewer.addEventListener('wheel', (e) => {
-            if (e.ctrlKey || e.metaKey) {
-                e.preventDefault();
-                e.deltaY > 0 ? zoomOut() : zoomIn();
-            }
-        }, { passive: false });
+viewer.addEventListener('wheel', (e) => {
+  // 只在按住 Ctrl 或 Meta 時觸發縮放
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+
+  // 滑鼠相對 viewer 的座標（+ 捲動量）
+  const { clientX, clientY, deltaY } = e;
+  const rect = viewer.getBoundingClientRect();
+  const offsetX = clientX - rect.left + viewer.scrollLeft;
+  const offsetY = clientY - rect.top + viewer.scrollTop;
+
+  // 節流
+  if (wheelRafId) cancelAnimationFrame(wheelRafId);
+  wheelRafId = requestAnimationFrame(() => {
+    // 以指數函數決定縮放比例
+    const zoomFactor = Math.exp(-deltaY * 0.001);
+    currentScale = Math.min(3.0, Math.max(0.25, currentScale * zoomFactor));
+
+    renderAllPages().then(() => {
+      // 重繪後調整 scroll，讓 (offsetX, offsetY) 保持在滑鼠下方
+      const newRect = viewer.getBoundingClientRect();
+      viewer.scrollLeft = offsetX * zoomFactor - (clientX - newRect.left);
+      viewer.scrollTop  = offsetY * zoomFactor - (clientY - newRect.top);
+    });
+  });
+}, { passive: false });
 
         zoomInBtn.addEventListener('click', zoomIn);
         zoomOutBtn.addEventListener('click', zoomOut);
