@@ -293,13 +293,18 @@ async function handleZoom(newScale, focusPoint = null) {
     restoreSelection(savedSelection);
     
     // 4. --- 新增：如果之前有翻譯框，就發送事件通知 content.js ---
-    if (activeInstanceId) {
-        // 使用 console.log 方便你除錯，確認事件有被觸發
-        console.log(`[PDF Viewer] 縮放完成，觸發 reAnchor 事件，ID: ${activeInstanceId}`);
+if (activeInstanceId) {
+    // 使用 setTimeout(..., 0) 將事件分派推遲到下一個事件循環
+    // 這給了瀏覽器足夠的時間去完全處理 restoreSelection() 的結果
+    setTimeout(() => {
+        // 您可以在控制台確認，此時的選取區一定是有效的
+        console.log(`[PDF Viewer] 延遲後發送 reAnchor 事件。選取文字: "${window.getSelection().toString()}"`);
+        
         document.dispatchEvent(new CustomEvent('reAnchorGeminiBox', {
             detail: { instanceId: activeInstanceId }
         }));
-    }
+    }, 0); // 延遲為 0 毫秒即可
+}
 }
     
     // --- 事件監聽 (其他部分保持不變) ---
