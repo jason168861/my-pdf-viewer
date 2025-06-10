@@ -242,70 +242,51 @@
     }
 
     // --- 【修改】縮放函式，整合選取狀態的儲存與恢復 ---
-async function handleZoom(newScale, focusPoint = null) {
-    if (!currentPdf || isRendering) return;
+    async function handleZoom(newScale, focusPoint = null) {
+        if (!currentPdf || isRendering) return;
 
-    // 1. 【儲存】在做任何事之前，先儲存目前的選取狀態
-    const savedSelection = saveSelection();
-    
-    // --- 新增：尋找當前的翻譯框並記下它的 ID ---
-    const activeBox = document.querySelector('.gemini-translation-result-box[data-instance-id]');
-    const activeInstanceId = activeBox ? activeBox.dataset.instanceId : null;
+        // 1. 【儲存】在做任何事之前，先儲存目前的選取狀態
+        const savedSelection = saveSelection();
 
-    // (這一段是您原有的縮放與渲染準備邏輯，保持不變)
-    const viewerRect = viewer.getBoundingClientRect();
-    const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
-    const scrollTopBefore = viewer.scrollTop;
-    const scrollHeightBefore = viewer.scrollHeight;
-    const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
-    
-    currentScale = newScale;
-    isRendering = true;
-    
-    updateZoomDisplay();
+        const viewerRect = viewer.getBoundingClientRect();
+        const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
+        const scrollTopBefore = viewer.scrollTop;
+        const scrollHeightBefore = viewer.scrollHeight;
+        const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
+        
+        currentScale = newScale;
+        isRendering = true;
+        
+        updateZoomDisplay();
 
-    const updatePromises = [];
-    for (let i = 1; i <= currentPdf.numPages; i++) {
-        updatePromises.push((async () => {
-            const page = await currentPdf.getPage(i);
-            const viewport = page.getViewport({ scale: currentScale });
-            const pageContainer = document.getElementById(`page-container-${i}`);
-            if (pageContainer) {
-                pageContainer.style.width = `${viewport.width}px`;
-                pageContainer.style.height = `${viewport.height}px`;
-                pageContainer.dataset.rendered = "false";
-                pageContainer.innerHTML = ''; // 核心問題點：這裡會清除所有內容，包含錨點
-            }
-        })());
+        const updatePromises = [];
+        for (let i = 1; i <= currentPdf.numPages; i++) {
+            updatePromises.push((async () => {
+                const page = await currentPdf.getPage(i);
+                const viewport = page.getViewport({ scale: currentScale });
+                const pageContainer = document.getElementById(`page-container-${i}`);
+                if (pageContainer) {
+                    pageContainer.style.width = `${viewport.width}px`;
+                    pageContainer.style.height = `${viewport.height}px`;
+                    pageContainer.dataset.rendered = "false";
+                    pageContainer.innerHTML = ''; // 依然要清空，為重新渲染做準備
+                }
+            })());
+        }
+        await Promise.all(updatePromises);
+
+        const scrollHeightAfter = viewer.scrollHeight;
+        viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
+        viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
+        
+        isRendering = false;
+        
+        // 2. 【渲染】等待可視區域的頁面重新渲染完成
+        await renderVisiblePages();
+        
+        // 3. 【恢復】在渲染完成後，恢復之前儲存的選取狀態
+        restoreSelection(savedSelection);
     }
-    await Promise.all(updatePromises);
-
-    const scrollHeightAfter = viewer.scrollHeight;
-    viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
-    viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
-    
-    isRendering = false;
-    
-    // 2. 【渲染】等待可視區域的頁面重新渲染完成
-    await renderVisiblePages();
-    
-    // 3. 【恢復】在渲染完成後，恢復之前儲存的選取狀態
-    restoreSelection(savedSelection);
-    
-    // 4. --- 新增：如果之前有翻譯框，就發送事件通知 content.js ---
-// 【最終修正版】 pdf.html handleZoom 結尾
-if (activeInstanceId && savedSelection) { // 確保我們有 selection 地址可以傳遞
-    setTimeout(() => {
-        document.dispatchEvent(new CustomEvent('reAnchorGeminiBox', {
-            detail: {
-                instanceId: activeInstanceId,
-                // ★ 關鍵：將選取的“地址”直接打包進事件中
-                selectionData: savedSelection 
-            }
-        }));
-    }, 0);
-}
-}
     
     // --- 事件監聽 (其他部分保持不變) ---
     uploadButton.addEventListener('click', () => uploadInput.click());
