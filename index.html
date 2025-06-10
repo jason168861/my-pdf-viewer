@@ -242,51 +242,57 @@
     }
 
     // --- 【修改】縮放函式，整合選取狀態的儲存與恢復 ---
-    async function handleZoom(newScale, focusPoint = null) {
-        if (!currentPdf || isRendering) return;
+async function handleZoom(newScale, focusPoint = null) {
+    if (!currentPdf || isRendering) return;
 
-        // 1. 【儲存】在做任何事之前，先儲存目前的選取狀態
-        const savedSelection = saveSelection();
+    // 1. 【儲存】在做任何事之前，先儲存所有狀態
+    const savedSelection = saveSelection();
+    // 【新增】呼叫 content.js 的函式來儲存翻譯框狀態
+    const savedTranslatorState = window.geminiTranslatorBridge?.saveState();
 
-        const viewerRect = viewer.getBoundingClientRect();
-        const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
-        const scrollTopBefore = viewer.scrollTop;
-        const scrollHeightBefore = viewer.scrollHeight;
-        const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
-        
-        currentScale = newScale;
-        isRendering = true;
-        
-        updateZoomDisplay();
+    const viewerRect = viewer.getBoundingClientRect();
+    const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
+    const scrollTopBefore = viewer.scrollTop;
+    const scrollHeightBefore = viewer.scrollHeight;
+    const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
+    
+    currentScale = newScale;
+    isRendering = true;
+    
+    updateZoomDisplay();
 
-        const updatePromises = [];
-        for (let i = 1; i <= currentPdf.numPages; i++) {
-            updatePromises.push((async () => {
-                const page = await currentPdf.getPage(i);
-                const viewport = page.getViewport({ scale: currentScale });
-                const pageContainer = document.getElementById(`page-container-${i}`);
-                if (pageContainer) {
-                    pageContainer.style.width = `${viewport.width}px`;
-                    pageContainer.style.height = `${viewport.height}px`;
-                    pageContainer.dataset.rendered = "false";
-                    pageContainer.innerHTML = ''; // 依然要清空，為重新渲染做準備
-                }
-            })());
-        }
-        await Promise.all(updatePromises);
-
-        const scrollHeightAfter = viewer.scrollHeight;
-        viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
-        viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
-        
-        isRendering = false;
-        
-        // 2. 【渲染】等待可視區域的頁面重新渲染完成
-        await renderVisiblePages();
-        
-        // 3. 【恢復】在渲染完成後，恢復之前儲存的選取狀態
-        restoreSelection(savedSelection);
+    const updatePromises = [];
+    for (let i = 1; i <= currentPdf.numPages; i++) {
+        updatePromises.push((async () => {
+            const page = await currentPdf.getPage(i);
+            const viewport = page.getViewport({ scale: currentScale });
+            const pageContainer = document.getElementById(`page-container-${i}`);
+            if (pageContainer) {
+                pageContainer.style.width = `${viewport.width}px`;
+                pageContainer.style.height = `${viewport.height}px`;
+                pageContainer.dataset.rendered = "false";
+                pageContainer.innerHTML = ''; // 依然要清空，為重新渲染做準備
+            }
+        })());
     }
+    await Promise.all(updatePromises);
+
+    const scrollHeightAfter = viewer.scrollHeight;
+    viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
+    viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
+    
+    isRendering = false;
+    
+    // 2. 【渲染】等待可視區域的頁面重新渲染完成
+    await renderVisiblePages();
+    
+    // 3. 【恢復】在渲染完成後，恢復之前儲存的所有狀態
+    restoreSelection(savedSelection);
+    // 【新增】如果之前有儲存翻譯框狀態，現在就呼叫 content.js 的函式來恢復它
+    if (savedTranslatorState) {
+        window.geminiTranslatorBridge.restoreState(savedTranslatorState);
+    }
+}
     
     // --- 事件監聽 (其他部分保持不變) ---
     uploadButton.addEventListener('click', () => uploadInput.click());
