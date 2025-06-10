@@ -56,7 +56,7 @@
 
     let currentPdf = null;
     let currentScale = 1.5;
-    let isRendering = false; // 【新】渲染狀態旗標，防止重複觸發
+    let isRendering = false;
 
     const viewer = document.getElementById('pdf-viewer');
     const uploadInput = document.getElementById('pdf-upload');
@@ -66,21 +66,96 @@
     const zoomOutBtn = document.getElementById('zoom-out');
     const zoomPercentSpan = document.getElementById('zoom-percent');
 
-    // --- 【優化】檔案處理 ---
+    // --- 【新增】儲存選取範圍的函式 ---
+    function saveSelection() {
+        const selection = window.getSelection();
+        // 如果沒有選取任何內容，或只是個游標，則返回 null
+        if (!selection.rangeCount || selection.isCollapsed) {
+            return null;
+        }
+
+        const range = selection.getRangeAt(0);
+        const { startContainer, endContainer, startOffset, endOffset } = range;
+
+        // 找到選取範圍的起始和結束節點所在的頁面容器
+        const startPageEl = startContainer.parentElement.closest('.page-container');
+        const endPageEl = endContainer.parentElement.closest('.page-container');
+
+        // 如果選取範圍不在 PDF 頁面內，則不處理
+        if (!startPageEl || !endPageEl) return null;
+        
+        // pdf.js 的文字層(textLayer)中的 span 才是我們要找的目標
+        // startContainer 可能是 span 內部的文字節點 (nodeType === 3)
+        const startSpan = startContainer.nodeType === 3 ? startContainer.parentNode : startContainer;
+        const endSpan = endContainer.nodeType === 3 ? endContainer.parentNode : endContainer;
+
+        // 取得該 span 在其父層 (textLayer) 中的索引位置
+        const startSpanIndex = Array.from(startSpan.parentElement.children).indexOf(startSpan);
+        const endSpanIndex = Array.from(endSpan.parentElement.children).indexOf(endSpan);
+        
+        // 返回一個包含所有必要資訊的物件，以便後續恢復
+        return {
+            startPage: parseInt(startPageEl.dataset.pageNumber, 10),
+            startSpanIndex,
+            startOffset,
+            endPage: parseInt(endPageEl.dataset.pageNumber, 10),
+            endSpanIndex,
+            endOffset,
+        };
+    }
+
+    // --- 【新增】恢復選取範圍的函式 ---
+    function restoreSelection(savedSelection) {
+        if (!savedSelection) return;
+
+        try {
+            // 根據儲存的頁碼找到新的頁面容器
+            const startPageEl = document.getElementById(`page-container-${savedSelection.startPage}`);
+            const endPageEl = document.getElementById(`page-container-${savedSelection.endPage}`);
+            if (!startPageEl || !endPageEl) return;
+
+            // 找到新的文字層
+            const startTextLayer = startPageEl.querySelector('.textLayer');
+            const endTextLayer = endPageEl.querySelector('.textLayer');
+            if (!startTextLayer || !endTextLayer) return;
+
+            // 根據儲存的索引找到新的 span 元素
+            const startSpan = startTextLayer.children[savedSelection.startSpanIndex];
+            const endSpan = endTextLayer.children[savedSelection.endSpanIndex];
+            if (!startSpan || !endSpan) return;
+
+            // 文字節點是 span 的第一個子元素
+            const startNode = startSpan.firstChild;
+            const endNode = endSpan.firstChild;
+            if (!startNode || !endNode) return;
+            
+            // 建立一個新的 Range 物件
+            const newRange = document.createRange();
+            newRange.setStart(startNode, Math.min(savedSelection.startOffset, startNode.length));
+            newRange.setEnd(endNode, Math.min(savedSelection.endOffset, endNode.length));
+
+            // 將新的 Range 套用到全域選取物件上
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(newRange);
+        } catch (error) {
+            console.error("恢復選取範圍時失敗:", error);
+        }
+    }
+
+
     async function loadFile(file) {
         if (!file || file.type !== 'application/pdf') {
             alert('請上傳 PDF 格式的檔案！');
             return;
         }
-
         fileNameSpan.textContent = file.name;
         viewer.innerHTML = '<p style="color: white;">正在載入檔案...</p>';
-        
         try {
             const fileData = await file.arrayBuffer();
             const pdfDoc = await pdfjsLib.getDocument(new Uint8Array(fileData)).promise;
             currentPdf = pdfDoc;
-            await setupViewer(); // 改為呼叫 setupViewer
+            await setupViewer();
         } catch (error) {
             console.error('載入 PDF 時發生錯誤:', error);
             fileNameSpan.textContent = '檔案載入失敗';
@@ -88,56 +163,40 @@
         }
     }
     
-    // --- 【新】建立 PDF 頁面結構 ---
     async function setupViewer() {
         if (!currentPdf) return;
-
-        viewer.innerHTML = ''; // 清空
+        viewer.innerHTML = '';
         updateZoomDisplay();
-
-        // 只建立頁面的容器 (div)，但不立即渲染 canvas
         for (let i = 1; i <= currentPdf.numPages; i++) {
             const page = await currentPdf.getPage(i);
             const viewport = page.getViewport({ scale: currentScale });
-            
             const pageContainer = document.createElement('div');
             pageContainer.className = 'page-container';
             pageContainer.id = `page-container-${i}`;
             pageContainer.style.width = `${viewport.width}px`;
             pageContainer.style.height = `${viewport.height}px`;
-
-            // 【新】使用 data-* 屬性儲存頁碼，方便後續渲染
             pageContainer.dataset.pageNumber = i;
             pageContainer.dataset.rendered = "false";
-
             viewer.appendChild(pageContainer);
         }
-        
-        // 首次載入時，渲染可視區域的頁面
-        renderVisiblePages();
+        await renderVisiblePages(); // 【修改】等待首次渲染完成
     }
 
-    // --- 【優化】核心渲染邏輯：只渲染可視頁面 ---
     async function renderVisiblePages() {
         if (isRendering || !currentPdf) return;
         isRendering = true;
 
         const pageContainers = viewer.querySelectorAll('.page-container');
         const viewerRect = viewer.getBoundingClientRect();
-
         const renderPromises = [];
 
         for (const container of pageContainers) {
             const containerRect = container.getBoundingClientRect();
-
-            // 判斷頁面是否在可視範圍內 (加上一些緩衝區，提前渲染)
             const isVisible = (containerRect.top < viewerRect.bottom + 500) && (containerRect.bottom > viewerRect.top - 500);
-
             if (isVisible && container.dataset.rendered === "false") {
-                 container.dataset.rendered = "true"; // 標記為正在渲染
-                 const pageNum = parseInt(container.dataset.pageNumber, 10);
-                 
-                 renderPromises.push(renderPage(pageNum));
+                container.dataset.rendered = "true";
+                const pageNum = parseInt(container.dataset.pageNumber, 10);
+                renderPromises.push(renderPage(pageNum));
             }
         }
         
@@ -145,50 +204,50 @@
         isRendering = false;
     }
 
-    // --- 【新】單頁渲染函式 ---
     async function renderPage(pageNum) {
-        const page = await currentPdf.getPage(pageNum);
-        const viewport = page.getViewport({ scale: currentScale });
-        const pageContainer = document.getElementById(`page-container-${pageNum}`);
+        try {
+            const page = await currentPdf.getPage(pageNum);
+            const viewport = page.getViewport({ scale: currentScale });
+            const pageContainer = document.getElementById(`page-container-${pageNum}`);
+            if (!pageContainer) return;
+            
+            pageContainer.innerHTML = ''; // 渲染前還是要清空，以防重複渲染
 
-        // 確保容器存在
-        if (!pageContainer) return;
-        
-        // 清空舊的 canvas 和 textLayer (如果有)
-        pageContainer.innerHTML = ''; 
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            pageContainer.appendChild(canvas);
 
-        const canvas = document.createElement('canvas');
-        const context = canvas.getContext('2d');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        pageContainer.appendChild(canvas);
+            const textLayerDiv = document.createElement('div');
+            textLayerDiv.className = 'textLayer';
+            pageContainer.appendChild(textLayerDiv);
+            
+            await page.render({ canvasContext: context, viewport }).promise;
 
-        const textLayerDiv = document.createElement('div');
-        textLayerDiv.className = 'textLayer';
-        pageContainer.appendChild(textLayerDiv);
-        
-        // 渲染 Canvas
-        await page.render({ canvasContext: context, viewport }).promise;
-
-        // 渲染文字層 (用於選取)
-        const textContent = await page.getTextContent();
-        await pdfjsLib.renderTextLayer({
-            textContent,
-            container: textLayerDiv,
-            viewport,
-            textDivs: []
-        }).promise;
+            const textContent = await page.getTextContent();
+            await pdfjsLib.renderTextLayer({
+                textContent,
+                container: textLayerDiv,
+                viewport,
+                textDivs: []
+            }).promise;
+        } catch (error) {
+             console.error(`渲染頁面 ${pageNum} 失敗:`, error);
+        }
     }
 
     function updateZoomDisplay() {
         zoomPercentSpan.textContent = `${Math.round(currentScale * 100)}%`;
     }
 
-    // --- 【優化】縮放函式 ---
+    // --- 【修改】縮放函式，整合選取狀態的儲存與恢復 ---
     async function handleZoom(newScale, focusPoint = null) {
         if (!currentPdf || isRendering) return;
 
-        // 儲存縮放前的狀態
+        // 1. 【儲存】在做任何事之前，先儲存目前的選取狀態
+        const savedSelection = saveSelection();
+
         const viewerRect = viewer.getBoundingClientRect();
         const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
         const scrollTopBefore = viewer.scrollTop;
@@ -200,7 +259,6 @@
         
         updateZoomDisplay();
 
-        // 【核心優化】更新所有頁面容器的尺寸，並將它們標記為未渲染
         const updatePromises = [];
         for (let i = 1; i <= currentPdf.numPages; i++) {
             updatePromises.push((async () => {
@@ -210,27 +268,30 @@
                 if (pageContainer) {
                     pageContainer.style.width = `${viewport.width}px`;
                     pageContainer.style.height = `${viewport.height}px`;
-                    pageContainer.dataset.rendered = "false"; // 重設渲染標記
-                    pageContainer.innerHTML = ''; // 清空內容，等待重新渲染
+                    pageContainer.dataset.rendered = "false";
+                    pageContainer.innerHTML = ''; // 依然要清空，為重新渲染做準備
                 }
             })());
         }
         await Promise.all(updatePromises);
 
-        // 根據縮放焦點，計算並設定新的捲動位置
         const scrollHeightAfter = viewer.scrollHeight;
         viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
         viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
         
-        isRendering = false; // 解除鎖定
-        renderVisiblePages(); // 僅渲染可視區域
+        isRendering = false;
+        
+        // 2. 【渲染】等待可視區域的頁面重新渲染完成
+        await renderVisiblePages();
+        
+        // 3. 【恢復】在渲染完成後，恢復之前儲存的選取狀態
+        restoreSelection(savedSelection);
     }
     
-    // --- 事件監聽 ---
- uploadButton.addEventListener('click', () => uploadInput.click());
+    // --- 事件監聽 (其他部分保持不變) ---
+    uploadButton.addEventListener('click', () => uploadInput.click());
     uploadInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
 
-    // 拖曳檔案事件
     viewer.addEventListener('dragover', (e) => { e.preventDefault(); viewer.classList.add('drag-over'); });
     viewer.addEventListener('dragleave', () => viewer.classList.remove('drag-over'));
     viewer.addEventListener('drop', (e) => {
@@ -239,7 +300,6 @@
         loadFile(e.dataTransfer.files[0]);
     });
     
-    // 節流 (Throttle) 函式 (保持不變)
     function throttle(func, limit) {
         let inThrottle;
         return function() {
@@ -253,32 +313,23 @@
         }
     }
     
-    // 【新】建立一個被節流的縮放處理函式
     const throttledZoomHandler = throttle((e) => {
-        const newScale = e.deltaY > 0 ? currentScale *0.75 : currentScale *1.25;
-        // 限制縮放範圍
+        const newScale = e.deltaY > 0 ? currentScale * 0.85 : currentScale * 1.15; // 微調縮放比例
         if (newScale >= 0.2 && newScale <= 8) {
              handleZoom(newScale, { y: e.clientY });
         }
-    }, 50); // 50ms 節流，保持縮放流暢
+    }, 50);
 
-    // 【新】完全接管滾輪事件，解決瀏覽器意外縮放問題
     viewer.addEventListener('wheel', (e) => {
-        // 1. 無論如何，都先阻止瀏覽器的預設行為 (捲動或縮放頁面)
         e.preventDefault();
-
-        // 2. 判斷使用者意圖
         if (e.ctrlKey || e.metaKey) {
-            // 如果按下 Ctrl/Cmd，執行我們節流過的縮放函式
             throttledZoomHandler(e);
         } else {
-            // 否則，手動控制 viewer 的捲動
-            // e.deltaY 代表滾輪垂直滾動的距離
             viewer.scrollTop += e.deltaY;
+            viewer.scrollLeft += e.deltaX; // 同時處理水平滾動
         }
-    }, { passive: false }); // passive: false 是讓 preventDefault() 生效的關鍵
+    }, { passive: false });
 
-    // 按鈕點擊事件 (保持不變)
     zoomInBtn.addEventListener('click', () => {
         const newScale = currentScale + 0.25;
         if (newScale <= 8.0) handleZoom(newScale);
@@ -289,7 +340,6 @@
         if (newScale >= 0.2) handleZoom(newScale);
     });
 
-    // 監聽滾動事件，以渲染新出現的頁面 (保持不變)
     viewer.addEventListener('scroll', throttle(renderVisiblePages, 150));
 
 </script>
