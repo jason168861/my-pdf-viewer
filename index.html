@@ -245,11 +245,14 @@
 async function handleZoom(newScale, focusPoint = null) {
     if (!currentPdf || isRendering) return;
 
-    // 1. 【儲存】在做任何事之前，先儲存所有狀態
+    // 步驟 1: 【暫停】命令 content.js 暫停更新，避免競爭問題
+    window.geminiTranslatorBridge?.pauseUpdates();
+
+    // 步驟 2: 【儲存】在安全的暫停狀態下，儲存所有必要狀態
     const savedSelection = saveSelection();
-    // 【新增】呼叫 content.js 的函式來儲存翻譯框狀態
     const savedTranslatorState = window.geminiTranslatorBridge?.saveState();
 
+    // --- 開始進行縮放和 DOM 清理 ---
     const viewerRect = viewer.getBoundingClientRect();
     const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
     const scrollTopBefore = viewer.scrollTop;
@@ -258,7 +261,6 @@ async function handleZoom(newScale, focusPoint = null) {
     
     currentScale = newScale;
     isRendering = true;
-    
     updateZoomDisplay();
 
     const updatePromises = [];
@@ -271,7 +273,7 @@ async function handleZoom(newScale, focusPoint = null) {
                 pageContainer.style.width = `${viewport.width}px`;
                 pageContainer.style.height = `${viewport.height}px`;
                 pageContainer.dataset.rendered = "false";
-                pageContainer.innerHTML = ''; // 依然要清空，為重新渲染做準備
+                pageContainer.innerHTML = ''; // 清空 DOM
             }
         })());
     }
@@ -282,16 +284,19 @@ async function handleZoom(newScale, focusPoint = null) {
     viewer.scrollLeft = (viewer.scrollWidth - viewer.clientWidth) / 2;
     
     isRendering = false;
-    
-    // 2. 【渲染】等待可視區域的頁面重新渲染完成
+    // --- 縮放和 DOM 清理結束 ---
+
+    // 步驟 3: 【渲染】等待可視區域的頁面重新渲染完成
     await renderVisiblePages();
     
-    // 3. 【恢復】在渲染完成後，恢復之前儲存的所有狀態
+    // 步驟 4: 【恢復】在新渲染的頁面上，恢復之前儲存的狀態
     restoreSelection(savedSelection);
-    // 【新增】如果之前有儲存翻譯框狀態，現在就呼叫 content.js 的函式來恢復它
     if (savedTranslatorState) {
         window.geminiTranslatorBridge.restoreState(savedTranslatorState);
     }
+
+    // 步驟 5: 【恢復運作】所有操作完成，命令 content.js 恢復正常更新
+    window.geminiTranslatorBridge?.resumeUpdates();
 }
     
     // --- 事件監聽 (其他部分保持不變) ---
