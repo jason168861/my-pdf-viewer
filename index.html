@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDF 預覽器 (可選取文字版)</title>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js"></script>
+    
+    <style>
+        body { font-family: Arial, sans-serif; background-color: #f0f0f0; margin: 0; padding: 20px; text-align: center; }
+        
+        #viewer-container {
+            margin-top: 20px;
+            display: inline-block; /* 讓容器自適應內容寬度 */
+            text-align: left; /* 讓內部元素靠左對齊 */
+        }
+
+        #loading-message { display: none; margin: 20px; }
+
+        /* 【關鍵CSS 1】頁面容器：設定相對定位，作為 Canvas 和文字層的定位基準 */
+        .page-container {
+            position: relative;
+            margin-bottom: 8px;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+
+        /* 【關鍵CSS 2】Canvas 和文字層：設定絕對定位，讓它們疊在一起 */
+        .page-container canvas,
+        .page-container .textLayer {
+            position: absolute;
+            top: 0;
+            left: 0;
+        }
+
+        /* 【關鍵CSS 3】PDF.js 官方提供的文字層樣式 */
+        .textLayer {
+            opacity: 0.5; /* 為了方便除錯，可以暫時設為 0.5，完成後改回 0 */
+            line-height: 1;
+        }
+        .textLayer > span {
+            color: transparent; /* 讓文字本身透明 */
+            position: absolute;
+            white-space: pre;
+            cursor: text;
+            transform-origin: 0% 0%;
+        }
+        /* 讓選取範圍的背景色顯示出來 */
+        ::selection { background: rgba(0, 0, 255, 0.3); }
+
+    </style>
+</head>
+<body>
+
+    <h1>PDF 預覽器 (可選取文字版)</h1>
+    <p>上傳 PDF 後，您將可以用滑鼠選取並複製其中的文字。</p>
+
+    <input type="file" id="pdf-upload">
+
+    <div id="viewer-container">
+        <div id="loading-message">正在載入 PDF，請稍候...</div>
+        <div id="pdf-viewer"></div>
+    </div>
+
+    <script>
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
+
+        const uploadInput = document.getElementById('pdf-upload');
+        const viewer = document.getElementById('pdf-viewer');
+        const loadingMessage = document.getElementById('loading-message');
+
+        uploadInput.addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (file && file.type === 'application/pdf') {
+                const fileReader = new FileReader();
+                fileReader.onload = () => renderPDF(new Uint8Array(fileReader.result));
+                fileReader.readAsArrayBuffer(file);
+            }
+        });
+
+async function renderPDF(data) {
+    viewer.innerHTML = '';
+    loadingMessage.style.display = 'block';
+
+    try {
+        const pdf = await pdfjsLib.getDocument(data).promise;
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const scale = 1.5;
+            const viewport = page.getViewport({ scale });
+
+            const pageContainer = document.createElement('div');
+            pageContainer.className = 'page-container';
+            pageContainer.style.width = `${viewport.width}px`;
+            pageContainer.style.height = `${viewport.height}px`;
+            viewer.appendChild(pageContainer);
+
+            const canvas = document.createElement('canvas');
+            const context = canvas.getContext('2d');
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            pageContainer.appendChild(canvas);
+
+            await page.render({
+                canvasContext: context,
+                viewport: viewport
+            }).promise;
+            
+            const textLayerDiv = document.createElement('div');
+            textLayerDiv.className = 'textLayer';
+            pageContainer.appendChild(textLayerDiv);
+
+            const textContent = await page.getTextContent();
+            
+            // 【已修正】使用正確的 'textContent' 參數名稱
+            await pdfjsLib.renderTextLayer({
+                textContent: textContent,
+                container: textLayerDiv,
+                viewport: viewport,
+                textDivs: []
+            }).promise;
+        }
+    } catch (error) {
+        console.error('渲染 PDF 時發生錯誤:', error);
+        viewer.innerHTML = `<p style="color: red;">抱歉，無法載入此 PDF 檔案。</p>`;
+    } finally {
+        loadingMessage.style.display = 'none';
+    }
+}
+    </script>
+
+</body>
+</html>
