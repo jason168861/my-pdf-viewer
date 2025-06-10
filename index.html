@@ -73,84 +73,160 @@
         </p>
     </div>
 
-    <script>
-        pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
 
-        let currentPdf = null;
-        let currentScale = 1.5;
+    let currentPdf = null;
+    let currentScale = 1.5;
 
-        // --- DOM 元素 (新增/修改) ---
-        const viewer = document.getElementById('pdf-viewer');
-        const uploadInput = document.getElementById('pdf-upload');
-        const uploadButton = document.getElementById('upload-button'); // 新的按鈕
-        const fileNameSpan = document.getElementById('file-name'); // 新的檔名顯示區
-        const zoomInBtn = document.getElementById('zoom-in');
-        const zoomOutBtn = document.getElementById('zoom-out');
-        const zoomPercentSpan = document.getElementById('zoom-percent');
+    // --- DOM 元素 (與你原本的相同) ---
+    const viewer = document.getElementById('pdf-viewer');
+    const uploadInput = document.getElementById('pdf-upload');
+    const uploadButton = document.getElementById('upload-button');
+    const fileNameSpan = document.getElementById('file-name');
+    const zoomInBtn = document.getElementById('zoom-in');
+    const zoomOutBtn = document.getElementById('zoom-out');
+    const zoomPercentSpan = document.getElementById('zoom-percent');
 
-        // --- 檔案處理與渲染邏輯 ---
-        async function loadFile(file) {
-            if (!file || file.type !== 'application/pdf') {
-                alert('請上傳 PDF 格式的檔案！');
-                return;
-            }
-
-            // 【關鍵修正】更新檔名顯示
-            fileNameSpan.textContent = file.name;
-            viewer.innerHTML = '<p style="color: white;">正在載入檔案...</p>';
-            
-            try {
-                const fileData = await file.arrayBuffer();
-                const pdfDoc = await pdfjsLib.getDocument(new Uint8Array(fileData)).promise;
-                currentPdf = pdfDoc;
-                renderAllPages();
-            } catch (error) {
-                console.error('載入 PDF 時發生錯誤:', error);
-                fileNameSpan.textContent = '檔案載入失敗';
-                viewer.innerHTML = `<p style="color: red;">抱歉，無法載入此 PDF 檔案。</p>`;
-            }
+    // --- 檔案處理與渲染邏輯 (與你原本的相同) ---
+    async function loadFile(file) {
+        if (!file || file.type !== 'application/pdf') {
+            alert('請上傳 PDF 格式的檔案！');
+            return;
         }
+
+        fileNameSpan.textContent = file.name;
+        viewer.innerHTML = '<p style="color: white;">正在載入檔案...</p>';
         
-        // renderAllPages, zoomIn, zoomOut, updateZoomDisplay 函式與上一版完全相同，此處省略以保持簡潔...
-        async function renderAllPages() { /* ...與上一版相同... */ }
-        function zoomIn() { /* ...與上一版相同... */ }
-        function zoomOut() { /* ...與上一版相同... */ }
-        function updateZoomDisplay() { /* ...與上一版相同... */ }
-        // 為了讓範例可直接運作，底下補上完整函式
-        async function renderAllPages(){if(!currentPdf)return;viewer.innerHTML='';updateZoomDisplay();for(let i=1;i<=currentPdf.numPages;i++){const page=await currentPdf.getPage(i);const viewport=page.getViewport({scale:currentScale});const pageContainer=document.createElement('div');pageContainer.className='page-container';pageContainer.style.width=`${viewport.width}px`;pageContainer.style.height=`${viewport.height}px`;viewer.appendChild(pageContainer);const canvas=document.createElement('canvas');const context=canvas.getContext('2d');canvas.width=viewport.width;canvas.height=viewport.height;pageContainer.appendChild(canvas);const textLayerDiv=document.createElement('div');textLayerDiv.className='textLayer';pageContainer.appendChild(textLayerDiv);await page.render({canvasContext:context,viewport:viewport}).promise;const textContent=await page.getTextContent();await pdfjsLib.renderTextLayer({textContent:textContent,container:textLayerDiv,viewport:viewport,textDivs:[]}).promise;}}
-        function zoomIn(){if(currentScale>=3.0)return;currentScale+=0.25;renderAllPages();}
-        function zoomOut(){if(currentScale<=0.25)return;currentScale-=0.25;renderAllPages();}
-        function updateZoomDisplay(){zoomPercentSpan.textContent=`${Math.round(currentScale*100)}%`;}
+        try {
+            const fileData = await file.arrayBuffer();
+            const pdfDoc = await pdfjsLib.getDocument(new Uint8Array(fileData)).promise;
+            currentPdf = pdfDoc;
+            await renderAllPages(); // 改為 await 等待渲染完成
+        } catch (error) {
+            console.error('載入 PDF 時發生錯誤:', error);
+            fileNameSpan.textContent = '檔案載入失敗';
+            viewer.innerHTML = `<p style="color: red;">抱歉，無法載入此 PDF 檔案。</p>`;
+        }
+    }
+    
+    // renderAllPages 函式與你原本的相同
+    async function renderAllPages() {
+        if (!currentPdf) return;
 
+        viewer.innerHTML = ''; // 清空現有內容
+        updateZoomDisplay();
 
-        // --- 事件監聽 ---
+        // 建立所有頁面的渲染承諾
+        const renderPromises = [];
+        for (let i = 1; i <= currentPdf.numPages; i++) {
+            const pageContainer = document.createElement('div');
+            pageContainer.className = 'page-container';
+            viewer.appendChild(pageContainer);
+            
+            renderPromises.push((async () => {
+                const page = await currentPdf.getPage(i);
+                const viewport = page.getViewport({ scale: currentScale });
+
+                pageContainer.style.width = `${viewport.width}px`;
+                pageContainer.style.height = `${viewport.height}px`;
+
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.width = viewport.width;
+                canvas.height = viewport.height;
+                pageContainer.appendChild(canvas);
+
+                const textLayerDiv = document.createElement('div');
+                textLayerDiv.className = 'textLayer';
+                pageContainer.appendChild(textLayerDiv);
+
+                await page.render({ canvasContext: context, viewport }).promise;
+
+                const textContent = await page.getTextContent();
+                await pdfjsLib.renderTextLayer({
+                    textContent,
+                    container: textLayerDiv,
+                    viewport,
+                    textDivs: []
+                }).promise;
+            })());
+        }
+        await Promise.all(renderPromises);
+    }
+    
+    function updateZoomDisplay() {
+        zoomPercentSpan.textContent = `${Math.round(currentScale * 100)}%`;
+    }
+
+    // --- 【關鍵修正】更新縮放函式 ---
+    async function zoomIn(e) {
+        if (currentScale >= 3.0) return;
         
-        // 【新】代理點擊：點擊我們的新按鈕時，去觸發隱藏的 input
-        uploadButton.addEventListener('click', () => uploadInput.click());
+        // 儲存縮放前的狀態
+        const viewerRect = viewer.getBoundingClientRect();
+        // 取得縮放焦點：滑鼠位置或可視區域中心
+        const focusY = e ? e.clientY - viewerRect.top : viewerRect.height / 2;
+        const scrollTopBefore = viewer.scrollTop;
+        const scrollHeightBefore = viewer.scrollHeight;
+        
+        // 計算縮放點在整個內容中的比例 (避免分母為0)
+        const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
 
-        // 監聽隱藏 input 的變化
-        uploadInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+        // 更新比例並等待重新渲染完成
+        currentScale += 0.25;
+        await renderAllPages();
 
-        // 拖曳檔案事件
-        viewer.addEventListener('dragover', (e) => { e.preventDefault(); viewer.classList.add('drag-over'); });
-        viewer.addEventListener('dragleave', () => viewer.classList.remove('drag-over'));
-        viewer.addEventListener('drop', (e) => {
+        // 根據縮放焦點，計算並設定新的捲動位置
+        const scrollHeightAfter = viewer.scrollHeight;
+        viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
+    }
+
+    async function zoomOut(e) {
+        if (currentScale <= 0.25) return;
+
+        const viewerRect = viewer.getBoundingClientRect();
+        const focusY = e ? e.clientY - viewerRect.top : viewerRect.height / 2;
+        const scrollTopBefore = viewer.scrollTop;
+        const scrollHeightBefore = viewer.scrollHeight;
+        
+        const scrollRatio = scrollHeightBefore > 0 ? (scrollTopBefore + focusY) / scrollHeightBefore : 0;
+
+        currentScale -= 0.25;
+        await renderAllPages();
+
+        const scrollHeightAfter = viewer.scrollHeight;
+        viewer.scrollTop = (scrollHeightAfter * scrollRatio) - focusY;
+    }
+
+
+    // --- 事件監聽 ---
+    
+    // 代理點擊
+    uploadButton.addEventListener('click', () => uploadInput.click());
+    uploadInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
+
+    // 拖曳檔案事件
+    viewer.addEventListener('dragover', (e) => { e.preventDefault(); viewer.classList.add('drag-over'); });
+    viewer.addEventListener('dragleave', () => viewer.classList.remove('drag-over'));
+    viewer.addEventListener('drop', (e) => {
+        e.preventDefault();
+        viewer.classList.remove('drag-over');
+        loadFile(e.dataTransfer.files[0]);
+    });
+
+    // 【關鍵修正】滾輪縮放事件，將事件物件 'e' 傳遞給縮放函式
+    viewer.addEventListener('wheel', (e) => {
+        if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
-            viewer.classList.remove('drag-over');
-            loadFile(e.dataTransfer.files[0]);
-        });
+            // 呼叫新的 async 縮放函式
+            e.deltaY > 0 ? zoomOut(e) : zoomIn(e);
+        }
+    }, { passive: false });
 
-        // 滾輪縮放事件
-        viewer.addEventListener('wheel', (e) => {
-            if (e.ctrlKey || e.metaKey) {
-                e.preventDefault();
-                e.deltaY > 0 ? zoomOut() : zoomIn();
-            }
-        }, { passive: false });
-
-        zoomInBtn.addEventListener('click', zoomIn);
-        zoomOutBtn.addEventListener('click', zoomOut);
-
-    </script>
+    // 按鈕點擊事件 (無需修改，因為新函式可以處理 e 為空的情況)
+    zoomInBtn.addEventListener('click', () => zoomIn());
+    zoomOutBtn.addEventListener('click', () => zoomOut());
+</script>
 </body>
 </html>
