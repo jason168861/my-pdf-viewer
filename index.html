@@ -9,6 +9,7 @@
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js"></script>
     
     <style>
+        /* --- CSS 樣式與原版相同，此處省略 --- */
         html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: Arial, sans-serif; background-color: #525659; }
         body { display: flex; flex-direction: column; }
         #top-bar { background-color: #333; color: white; padding: 8px 16px; display: flex; align-items: center; flex-shrink: 0; box-shadow: 0 2px 5px rgba(0,0,0,0.4); z-index: 10; }
@@ -22,7 +23,7 @@
         #zoom-percent { min-width: 50px; text-align: center; }
         #pdf-viewer { flex-grow: 1; overflow-y: auto; text-align: center; padding: 20px 0; transition: background-color 0.3s; }
         #pdf-viewer.drag-over { background-color: #3e6d8e; border: 4px dashed #fff; }
-        .page-container { position: relative; margin: 0 auto 16px auto; box-shadow: 0 4px 8px rgba(0,0,0,0.2); background-color: white; }
+        .page-container { position: relative; margin: 0 auto 16px auto; box-shadow: 0 4px 8px rgba(0,0,0,0.2); background-color: white; } /* 加上背景色避免透明 */
         .page-container canvas, .page-container .textLayer { position: absolute; top: 0; left: 0; }
         .textLayer { line-height: 1; }
         .textLayer > span { color: transparent; position: absolute; white-space: pre; cursor: text; transform-origin: 0% 0%; }
@@ -65,11 +66,10 @@
     const zoomOutBtn = document.getElementById('zoom-out');
     const zoomPercentSpan = document.getElementById('zoom-percent');
 
-    // 添加全局變數用於儲存錨點資訊
-    window.geminiAnchorsToRestore = [];
-
+    // --- 【新增】儲存選取範圍的函式 ---
     function saveSelection() {
         const selection = window.getSelection();
+        // 如果沒有選取任何內容，或只是個游標，則返回 null
         if (!selection.rangeCount || selection.isCollapsed) {
             return null;
         }
@@ -77,17 +77,23 @@
         const range = selection.getRangeAt(0);
         const { startContainer, endContainer, startOffset, endOffset } = range;
 
+        // 找到選取範圍的起始和結束節點所在的頁面容器
         const startPageEl = startContainer.parentElement.closest('.page-container');
         const endPageEl = endContainer.parentElement.closest('.page-container');
 
+        // 如果選取範圍不在 PDF 頁面內，則不處理
         if (!startPageEl || !endPageEl) return null;
         
+        // pdf.js 的文字層(textLayer)中的 span 才是我們要找的目標
+        // startContainer 可能是 span 內部的文字節點 (nodeType === 3)
         const startSpan = startContainer.nodeType === 3 ? startContainer.parentNode : startContainer;
         const endSpan = endContainer.nodeType === 3 ? endContainer.parentNode : endContainer;
 
+        // 取得該 span 在其父層 (textLayer) 中的索引位置
         const startSpanIndex = Array.from(startSpan.parentElement.children).indexOf(startSpan);
         const endSpanIndex = Array.from(endSpan.parentElement.children).indexOf(endSpan);
         
+        // 返回一個包含所有必要資訊的物件，以便後續恢復
         return {
             startPage: parseInt(startPageEl.dataset.pageNumber, 10),
             startSpanIndex,
@@ -98,30 +104,37 @@
         };
     }
 
+    // --- 【新增】恢復選取範圍的函式 ---
     function restoreSelection(savedSelection) {
         if (!savedSelection) return;
 
         try {
+            // 根據儲存的頁碼找到新的頁面容器
             const startPageEl = document.getElementById(`page-container-${savedSelection.startPage}`);
             const endPageEl = document.getElementById(`page-container-${savedSelection.endPage}`);
             if (!startPageEl || !endPageEl) return;
 
+            // 找到新的文字層
             const startTextLayer = startPageEl.querySelector('.textLayer');
             const endTextLayer = endPageEl.querySelector('.textLayer');
             if (!startTextLayer || !endTextLayer) return;
 
+            // 根據儲存的索引找到新的 span 元素
             const startSpan = startTextLayer.children[savedSelection.startSpanIndex];
             const endSpan = endTextLayer.children[savedSelection.endSpanIndex];
             if (!startSpan || !endSpan) return;
 
+            // 文字節點是 span 的第一個子元素
             const startNode = startSpan.firstChild;
             const endNode = endSpan.firstChild;
             if (!startNode || !endNode) return;
             
+            // 建立一個新的 Range 物件
             const newRange = document.createRange();
             newRange.setStart(startNode, Math.min(savedSelection.startOffset, startNode.length));
             newRange.setEnd(endNode, Math.min(savedSelection.endOffset, endNode.length));
 
+            // 將新的 Range 套用到全域選取物件上
             const selection = window.getSelection();
             selection.removeAllRanges();
             selection.addRange(newRange);
@@ -129,6 +142,7 @@
             console.error("恢復選取範圍時失敗:", error);
         }
     }
+
 
     async function loadFile(file) {
         if (!file || file.type !== 'application/pdf') {
@@ -165,7 +179,7 @@
             pageContainer.dataset.rendered = "false";
             viewer.appendChild(pageContainer);
         }
-        await renderVisiblePages();
+        await renderVisiblePages(); // 【修改】等待首次渲染完成
     }
 
     async function renderVisiblePages() {
@@ -197,7 +211,7 @@
             const pageContainer = document.getElementById(`page-container-${pageNum}`);
             if (!pageContainer) return;
             
-            pageContainer.innerHTML = '';
+            pageContainer.innerHTML = ''; // 渲染前還是要清空，以防重複渲染
 
             const canvas = document.createElement('canvas');
             const context = canvas.getContext('2d');
@@ -218,24 +232,8 @@
                 viewport,
                 textDivs: []
             }).promise;
-
-            // 重新插入錨點
-            const anchorsToInsert = window.geminiAnchorsToRestore.filter(a => a.pageNumber == pageNum);
-            for (const anchorInfo of anchorsToInsert) {
-                const newAnchor = document.createElement('gemini-anchor');
-                newAnchor.dataset.instanceId = anchorInfo.instanceId;
-                const textLayer = pageContainer.querySelector('.textLayer');
-                if (textLayer.children[anchorInfo.anchorIndex]) {
-                    textLayer.insertBefore(newAnchor, textLayer.children[anchorInfo.anchorIndex]);
-                } else {
-                    textLayer.appendChild(newAnchor);
-                }
-                if (window.geminiActiveInstances[anchorInfo.instanceId]) {
-                    window.geminiActiveInstances[anchorInfo.instanceId].anchor = newAnchor;
-                }
-            }
         } catch (error) {
-            console.error(`渲染頁面 ${pageNum} 失敗:`, error);
+             console.error(`渲染頁面 ${pageNum} 失敗:`, error);
         }
     }
 
@@ -243,23 +241,12 @@
         zoomPercentSpan.textContent = `${Math.round(currentScale * 100)}%`;
     }
 
+    // --- 【修改】縮放函式，整合選取狀態的儲存與恢復 ---
     async function handleZoom(newScale, focusPoint = null) {
         if (!currentPdf || isRendering) return;
 
+        // 1. 【儲存】在做任何事之前，先儲存目前的選取狀態
         const savedSelection = saveSelection();
-
-        // 保存所有實例的錨點資訊
-        window.geminiAnchorsToRestore = [];
-        for (const instanceId in window.geminiActiveInstances) {
-            const instance = window.geminiActiveInstances[instanceId];
-            if (instance.anchor) {
-                const textLayer = instance.anchor.parentElement;
-                const pageContainer = textLayer.parentElement;
-                const pageNumber = pageContainer.dataset.pageNumber;
-                const anchorIndex = Array.from(textLayer.children).indexOf(instance.anchor);
-                window.geminiAnchorsToRestore.push({ instanceId, pageNumber, anchorIndex });
-            }
-        }
 
         const viewerRect = viewer.getBoundingClientRect();
         const focusY = focusPoint ? focusPoint.y - viewerRect.top : viewerRect.height / 2;
@@ -282,7 +269,7 @@
                     pageContainer.style.width = `${viewport.width}px`;
                     pageContainer.style.height = `${viewport.height}px`;
                     pageContainer.dataset.rendered = "false";
-                    pageContainer.innerHTML = '';
+                    pageContainer.innerHTML = ''; // 依然要清空，為重新渲染做準備
                 }
             })());
         }
@@ -294,12 +281,14 @@
         
         isRendering = false;
         
+        // 2. 【渲染】等待可視區域的頁面重新渲染完成
         await renderVisiblePages();
         
-        window.geminiAnchorsToRestore = [];
+        // 3. 【恢復】在渲染完成後，恢復之前儲存的選取狀態
         restoreSelection(savedSelection);
     }
     
+    // --- 事件監聽 (其他部分保持不變) ---
     uploadButton.addEventListener('click', () => uploadInput.click());
     uploadInput.addEventListener('change', (e) => loadFile(e.target.files[0]));
 
@@ -325,7 +314,7 @@
     }
     
     const throttledZoomHandler = throttle((e) => {
-        const newScale = e.deltaY > 0 ? currentScale * 0.85 : currentScale * 1.15;
+        const newScale = e.deltaY > 0 ? currentScale * 0.85 : currentScale * 1.15; // 微調縮放比例
         if (newScale >= 0.2 && newScale <= 8) {
              handleZoom(newScale, { y: e.clientY });
         }
@@ -337,7 +326,7 @@
             throttledZoomHandler(e);
         } else {
             viewer.scrollTop += e.deltaY;
-            viewer.scrollLeft += e.deltaX;
+            viewer.scrollLeft += e.deltaX; // 同時處理水平滾動
         }
     }, { passive: false });
 
@@ -352,6 +341,7 @@
     });
 
     viewer.addEventListener('scroll', throttle(renderVisiblePages, 150));
+
 </script>
 </body>
 </html>
