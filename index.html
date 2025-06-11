@@ -53,7 +53,7 @@
 
 <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js`;
-
+    window.isZooming = false;
     let currentPdf = null;
     let currentScale = 1.5;
     let isRendering = false;
@@ -244,6 +244,7 @@
     // --- 【修改】縮放函式，整合選取狀態的儲存與恢復 ---
     async function handleZoom(newScale, focusPoint = null) {
         if (!currentPdf || isRendering) return;
+        window.isZooming = true;
 
         // 1. 【儲存】在做任何事之前，先儲存目前的選取狀態
         const savedSelection = saveSelection();
@@ -286,6 +287,7 @@
         
         // 3. 【恢復】在渲染完成後，恢復之前儲存的選取狀態
         restoreSelection(savedSelection);
+        window.isZooming = false;
     }
     
     // --- 事件監聽 (其他部分保持不變) ---
