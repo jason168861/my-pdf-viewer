@@ -320,15 +320,24 @@
         }
     }, 50);
 
-    viewer.addEventListener('wheel', (e) => {
+// --- 【新增/修改】改為全域滾輪事件監聽，徹底解決原生縮放問題 ---
+window.addEventListener('wheel', (e) => {
+    // 檢查是否為「Ctrl + 滾輪」的縮放意圖
+    if (e.ctrlKey || e.metaKey) {
+        // **最重要的一步**：立即阻止瀏覽器的預設縮放行為
         e.preventDefault();
-        if (e.ctrlKey || e.metaKey) {
-            throttledZoomHandler(e);
-        } else {
-            viewer.scrollTop += e.deltaY;
-            viewer.scrollLeft += e.deltaX; // 同時處理水平滾動
+
+        // 接著，執行我們自訂的縮放函式
+        const newScale = e.deltaY > 0 ? currentScale * 0.85 : currentScale * 1.15;
+        if (newScale >= 0.2 && newScale <= 8) {
+            handleZoom(newScale, { y: e.clientY });
         }
-    }, { passive: false });
+    }
+    // 注意：對於非 Ctrl 的滾輪事件（也就是正常的頁面滾動），
+    // 我們不呼叫 preventDefault()，讓瀏覽器去處理預設的滾動行為，
+    // 這樣 PDF 檢視器本身的滾動才能正常運作。
+
+}, { passive: false }); // passive: false 依然是必要的
 
     zoomInBtn.addEventListener('click', () => {
         const newScale = currentScale + 0.25;
